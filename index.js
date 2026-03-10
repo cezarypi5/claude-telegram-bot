@@ -21,7 +21,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
 }
 
 // ─── Clients ─────────────────────────────────────────────────────────────────
-const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN);
+const bot = new Telegraf(process.env.TELEGRAM_BOT_TOKEN, { handlerTimeout: 600_000 });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Config ───────────────────────────────────────────────────────────────────
