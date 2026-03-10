@@ -73,45 +73,60 @@ function slugify(text) {
     .substring(0, 50);
 }
 
-// ─── Helper: Create GitHub repo via API ──────────────────────────────────────
-function createGitHubRepo(repoName, description) {
+// ─── Helper: GitHub API request ───────────────────────────────────────────────
+function githubApi(method, path, body) {
   const https = require('https');
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ name: repoName, description, private: false, auto_init: false });
+    const bodyStr = body ? JSON.stringify(body) : '';
     const req = https.request({
       hostname: 'api.github.com',
-      path: '/user/repos',
-      method: 'POST',
+      path,
+      method,
       headers: {
         'Authorization': `token ${GITHUB_TOKEN}`,
         'User-Agent': 'cm-bot',
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
+        'Accept': 'application/vnd.github.v3+json',
+        ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {})
       }
     }, (res) => {
       let d = '';
       res.on('data', c => d += c);
       res.on('end', () => {
-        const r = JSON.parse(d);
-        if (r.html_url) resolve(r.html_url);
-        else if (r.errors && r.errors[0].message.includes('already exists')) {
-          resolve(`https://github.com/${GITHUB_USER}/${repoName}`);
-        } else reject(new Error(JSON.stringify(r)));
+        try { resolve(JSON.parse(d)); }
+        catch { resolve(d); }
       });
     });
     req.on('error', reject);
-    req.write(body);
+    if (bodyStr) req.write(bodyStr);
     req.end();
   });
 }
 
-// ─── Helper: Save files, init repo, commit and push ──────────────────────────
+// ─── Helper: Create GitHub repo via API ──────────────────────────────────────
+async function createGitHubRepo(repoName, description) {
+  const r = await githubApi('POST', '/user/repos', { name: repoName, description, private: false, auto_init: false });
+  if (r.html_url) return r.html_url;
+  if (r.errors && r.errors[0].message.includes('already exists')) return `https://github.com/${GITHUB_USER}/${repoName}`;
+  throw new Error(JSON.stringify(r));
+}
+
+// ─── Helper: Enable GitHub Pages ─────────────────────────────────────────────
+async function enableGitHubPages(repoName) {
+  await githubApi('POST', `/repos/${GITHUB_USER}/${repoName}/pages`, {
+    source: { branch: 'main', path: '/' }
+  });
+  return `https://${GITHUB_USER}.github.io/${repoName}`;
+}
+
+// ─── Helper: Save files, init repo, commit, push, enable Pages ───────────────
 async function saveAndPush(projectName, files, description) {
   const repoName = slugify(projectName);
   const projectDir = path.join(PROJECTS_DIR, repoName);
 
-  // Create project dir
   fs.mkdirSync(projectDir, { recursive: true });
+
+  const hasHtml = files.some(f => f.name.endsWith('.html'));
 
   // Save all files
   for (const file of files) {
@@ -139,7 +154,17 @@ async function saveAndPush(projectName, files, description) {
     execSync(cmd, { stdio: 'pipe' });
   }
 
-  return { repoUrl, projectDir };
+  // Enable GitHub Pages for HTML projects
+  let pagesUrl = null;
+  if (hasHtml) {
+    try {
+      pagesUrl = await enableGitHubPages(repoName);
+    } catch (e) {
+      log(`Pages enable error: ${e.message}`);
+    }
+  }
+
+  return { repoUrl, pagesUrl, projectDir };
 }
 
 // ─── Helper: Ask Claude ───────────────────────────────────────────────────────
@@ -255,8 +280,9 @@ bot.command('save', async (ctx) => {
       content: b.code
     }));
 
-    const { repoUrl } = await saveAndPush(projectName, files, projectName);
-    ctx.reply(`✅ Saved to GitHub!\n\n🔗 ${repoUrl}`);
+    const { repoUrl, pagesUrl } = await saveAndPush(projectName, files, projectName);
+    const liveMsg = pagesUrl ? `\n🌐 Live app (ready in ~60s):\n${pagesUrl}` : '';
+    ctx.reply(`✅ Saved to GitHub!\n\n📦 Repo: ${repoUrl}${liveMsg}`);
     log(`Saved project: ${projectName} -> ${repoUrl}`);
   } catch (err) {
     log(`Save error: ${err.message}`);
@@ -299,8 +325,9 @@ bot.on('text', async (ctx) => {
             name: blocks.length === 1 ? `index.${getExtension(b.lang)}` : `file${i + 1}.${getExtension(b.lang)}`,
             content: b.code
           }));
-          const { repoUrl } = await saveAndPush(projectName, files, userMessage.substring(0, 100));
-          await ctx.reply(`✅ Auto-saved to GitHub!\n\n🔗 ${repoUrl}`);
+          const { repoUrl, pagesUrl } = await saveAndPush(projectName, files, userMessage.substring(0, 100));
+          const liveMsg = pagesUrl ? `\n🌐 Live app (ready in ~60s):\n${pagesUrl}` : '';
+          await ctx.reply(`✅ Auto-saved to GitHub!\n\n📦 Repo: ${repoUrl}${liveMsg}`);
           log(`Auto-saved: ${projectName} -> ${repoUrl}`);
         } catch (err) {
           log(`Auto-save error: ${err.message}`);
